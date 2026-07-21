@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use UVCS Tools"
+  short_description: "Run approved read-only UVCS status and diffs"
+  default_prompt: "Use $use-uvcs-tools to inspect this UVCS workspace safely."
