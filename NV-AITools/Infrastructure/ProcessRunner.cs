@@ -1,10 +1,46 @@
+using System.Buffers;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Text;
 
-namespace UvcsTools.Infrastructure;
+namespace NVAITools.Infrastructure;
 
 sealed record ProcessResult(int ExitCode, string StandardOutput, string StandardError);
+
+sealed class OutputBudget(long maximumCharacters, string exceededMessage)
+{
+    long reservedCharacters;
+    int exceeded;
+
+    public bool IsExceeded => Volatile.Read(ref exceeded) != 0;
+
+    public void ThrowIfExceeded()
+    {
+        if (IsExceeded)
+            throw LimitExceeded();
+    }
+
+    public void Reserve(int characters)
+    {
+        while (true)
+        {
+            long current = Volatile.Read(ref reservedCharacters);
+            if (current > maximumCharacters - characters)
+            {
+                Interlocked.Exchange(ref exceeded, 1);
+                throw LimitExceeded();
+            }
+
+            if (Interlocked.CompareExchange(
+                    ref reservedCharacters,
+                    current + characters,
+                    current) == current)
+                return;
+        }
+    }
+
+    ToolException LimitExceeded() => new(exceededMessage, ExitCodes.ExternalCommandFailure);
+}
 
 sealed class ProcessRunner
 {
@@ -13,8 +49,12 @@ sealed class ProcessRunner
         IReadOnlyList<string> arguments,
         string workingDirectory,
         TimeSpan timeout,
-        int maximumOutputCharacters)
+        int maximumOutputCharacters,
+        CancellationToken cancellationToken = default,
+        OutputBudget? outputBudget = null)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var startInfo = new ProcessStartInfo(executable)
         {
             WorkingDirectory = workingDirectory,
@@ -49,30 +89,102 @@ sealed class ProcessRunner
                 exception);
         }
 
-        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
-        Task<string> stderrTask = process.StandardError.ReadToEndAsync();
         using var timeoutSource = new CancellationTokenSource(timeout);
+        using var linkedSource = CancellationTokenSource.CreateLinkedTokenSource(
+            timeoutSource.Token,
+            cancellationToken);
+        var processBudget = new OutputBudget(
+            maximumOutputCharacters,
+            $"'{executable}' exceeded the configured output limit.");
+        var outputFailure = new TaskCompletionSource<Exception>(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task<string> stdoutTask = ReadOutputAsync(
+            process.StandardOutput,
+            processBudget,
+            outputBudget,
+            outputFailure,
+            linkedSource.Token);
+        Task<string> stderrTask = ReadOutputAsync(
+            process.StandardError,
+            processBudget,
+            outputBudget,
+            outputFailure,
+            linkedSource.Token);
+        Task exitTask = process.WaitForExitAsync(linkedSource.Token);
 
         try
         {
-            await process.WaitForExitAsync(timeoutSource.Token);
+            Task completed = await Task.WhenAny(exitTask, outputFailure.Task);
+            if (completed == outputFailure.Task)
+                throw await outputFailure.Task;
+
+            await exitTask;
+            string[] output = await Task.WhenAll(stdoutTask, stderrTask);
+            return new ProcessResult(process.ExitCode, output[0], output[1]);
         }
         catch (OperationCanceledException)
         {
+            linkedSource.Cancel();
             Kill(process);
-            await Task.WhenAll(stdoutTask, stderrTask);
-            throw new ToolException(
-                $"'{executable}' exceeded the {timeout.TotalSeconds:0}-second timeout.",
-                ExitCodes.ExternalCommandFailure);
+            await ObserveAsync(exitTask, stdoutTask, stderrTask);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (timeoutSource.IsCancellationRequested)
+                throw new ToolException(
+                    $"'{executable}' exceeded the {timeout.TotalSeconds:0}-second timeout.",
+                    ExitCodes.ExternalCommandFailure);
+            throw;
         }
+        catch
+        {
+            linkedSource.Cancel();
+            Kill(process);
+            await ObserveAsync(exitTask, stdoutTask, stderrTask);
+            throw;
+        }
+    }
 
-        string[] output = await Task.WhenAll(stdoutTask, stderrTask);
-        if ((long)output[0].Length + output[1].Length > maximumOutputCharacters)
-            throw new ToolException(
-                $"'{executable}' exceeded the configured output limit.",
-                ExitCodes.ExternalCommandFailure);
+    static async Task<string> ReadOutputAsync(
+        StreamReader reader,
+        OutputBudget processBudget,
+        OutputBudget? commandBudget,
+        TaskCompletionSource<Exception> outputFailure,
+        CancellationToken cancellationToken)
+    {
+        const int BufferSize = 4096;
+        char[] buffer = ArrayPool<char>.Shared.Rent(BufferSize);
+        var output = new StringBuilder();
+        try
+        {
+            while (true)
+            {
+                int read = await reader.ReadAsync(buffer.AsMemory(0, BufferSize), cancellationToken);
+                if (read == 0)
+                    return output.ToString();
 
-        return new ProcessResult(process.ExitCode, output[0], output[1]);
+                processBudget.Reserve(read);
+                commandBudget?.Reserve(read);
+                output.Append(buffer, 0, read);
+            }
+        }
+        catch (Exception exception)
+        {
+            outputFailure.TrySetResult(exception);
+            throw;
+        }
+        finally
+        {
+            ArrayPool<char>.Shared.Return(buffer);
+        }
+    }
+
+    static async Task ObserveAsync(Task exitTask, Task stdoutTask, Task stderrTask)
+    {
+        try
+        {
+            await Task.WhenAll(exitTask, stdoutTask, stderrTask);
+        }
+        catch
+        {
+        }
     }
 
     static void Kill(Process process)

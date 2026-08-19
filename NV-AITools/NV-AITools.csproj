@@ -2,9 +2,12 @@
 
     <PropertyGroup>
         <OutputType>Exe</OutputType>
-        <TargetFramework>net10.0</TargetFramework>
-        <AssemblyName>UvcsTools</AssemblyName>
-        <RootNamespace>UvcsTools</RootNamespace>
+        <TargetFramework>net10.0-windows</TargetFramework>
+        <UseWindowsForms>true</UseWindowsForms>
+        <ApplicationIcon>AppIcon.ico</ApplicationIcon>
+        <AssemblyName>NV-AITools</AssemblyName>
+        <RootNamespace>NVAITools</RootNamespace>
+        <Version>1.2.0</Version>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <InvariantGlobalization>true</InvariantGlobalization>

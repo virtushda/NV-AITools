@@ -1,10 +1,13 @@
-namespace UvcsTools.Infrastructure;
+namespace NVAITools.Infrastructure;
 
 sealed class WorkspaceResolver(ProcessRunner processes)
 {
     static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
 
-    public async Task<string> ResolveAsync(string requestedPath)
+    public async Task<string> ResolveAsync(
+        string requestedPath,
+        CancellationToken cancellationToken = default,
+        OutputBudget? outputBudget = null)
     {
         if (!Directory.Exists(requestedPath))
             throw new ToolException(
@@ -16,7 +19,9 @@ sealed class WorkspaceResolver(ProcessRunner processes)
             ["getworkspacefrompath", requestedPath, "--format={wkpath}"],
             requestedPath,
             Timeout,
-            32 * 1024);
+            32 * 1024,
+            cancellationToken,
+            outputBudget);
 
         if (result.ExitCode != 0)
             throw new ToolException(

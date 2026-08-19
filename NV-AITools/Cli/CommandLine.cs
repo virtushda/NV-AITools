@@ -1,12 +1,79 @@
 using System.Globalization;
+using System.IO.Enumeration;
 
-namespace UvcsTools.Cli;
+namespace NVAITools.Cli;
 
 abstract record CommandRequest(string Workspace);
 
 sealed record StatusRequest(string Workspace) : CommandRequest(Workspace);
 
-sealed record PendingChangesDiffsRequest(string Workspace) : CommandRequest(Workspace);
+sealed record PendingChangesDiffsRequest : CommandRequest
+{
+    const int MaximumFilterCount = 32;
+    const int MaximumFilterLength = 255;
+    const int MaximumTotalFilterCharacters = 1024;
+    static readonly char[] InvalidFileNameCharacters = Path.GetInvalidFileNameChars();
+
+    public PendingChangesDiffsRequest(string workspace, IReadOnlyList<string?> fileNameFilters)
+        : base(workspace)
+    {
+        if (fileNameFilters.Count > MaximumFilterCount)
+            throw Invalid($"A maximum of {MaximumFilterCount} file filters is supported.");
+
+        var validatedFilters = new string[fileNameFilters.Count];
+        int totalCharacters = 0;
+        for (int index = 0; index < fileNameFilters.Count; index++)
+        {
+            string? filter = fileNameFilters[index];
+            if (string.IsNullOrWhiteSpace(filter))
+                throw Invalid("File filters cannot be empty or whitespace.");
+            if (filter.Length > MaximumFilterLength)
+                throw Invalid($"File filters cannot exceed {MaximumFilterLength} characters.");
+
+            for (int characterIndex = 0; characterIndex < filter.Length; characterIndex++)
+            {
+                char character = filter[characterIndex];
+                if (character is not '*' and not '?' &&
+                    Array.IndexOf(InvalidFileNameCharacters, character) >= 0)
+                {
+                    throw Invalid($"File filter '{filter}' contains an invalid filename character.");
+                }
+            }
+
+            totalCharacters += filter.Length;
+            if (totalCharacters > MaximumTotalFilterCharacters)
+                throw Invalid($"File filters cannot exceed {MaximumTotalFilterCharacters} total characters.");
+
+            validatedFilters[index] = filter;
+        }
+
+        FileNameFilters = validatedFilters;
+    }
+
+    public IReadOnlyList<string> FileNameFilters { get; }
+
+    public bool MatchesFileName(string relativePath)
+    {
+        if (FileNameFilters.Count == 0)
+            return true;
+
+        ReadOnlySpan<char> fileName = Path.GetFileName(relativePath.AsSpan());
+        for (int index = 0; index < FileNameFilters.Count; index++)
+        {
+            if (FileSystemName.MatchesSimpleExpression(
+                FileNameFilters[index].AsSpan(),
+                fileName,
+                ignoreCase: true))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    static ToolException Invalid(string message) => new(message, ExitCodes.InvalidArguments);
+}
 
 sealed record ChangesetDiffsRequest(
     string Workspace,
@@ -26,10 +93,10 @@ enum DiffAlgorithm
 static class CommandLine
 {
     const string Usage = "Usage:\n" +
-        "  UvcsTools.exe status [--workspace <path>]\n" +
-        "  UvcsTools.exe pending-changes-diffs [--workspace <path>]\n" +
-        "  UvcsTools.exe changeset-diffs --from <changeset> --to <changeset> " +
-        "[--workspace <path>] [--algorithm histogram|patience|default|minimal] [--find-renames]";
+        "  NV-AITools.exe status [--workspace <path>]\n" +
+        "  NV-AITools.exe pending-changes-diffs [--workspace <path>] [--file-filter <glob>]...\n" +
+        "  NV-AITools.exe changeset-diffs --from <changeset> --to <changeset> " +
+        "[--workspace <path>] [--algorithm histogram|patience|default|minimal]";
 
     public static CommandRequest Parse(string[] args)
     {
@@ -39,7 +106,7 @@ static class CommandLine
         return args[0] switch
         {
             "status" => new StatusRequest(ParseWorkspaceOnly(args)),
-            "pending-changes-diffs" => new PendingChangesDiffsRequest(ParseWorkspaceOnly(args)),
+            "pending-changes-diffs" => ParsePendingChangesDiffs(args),
             "changeset-diffs" => ParseChangesetDiffs(args),
             _ => throw Invalid($"Unknown command '{args[0]}'.")
         };
@@ -62,6 +129,30 @@ static class CommandLine
         return ResolveInputPath(workspace);
     }
 
+    static PendingChangesDiffsRequest ParsePendingChangesDiffs(string[] args)
+    {
+        string? workspace = null;
+        var fileNameFilters = new List<string>();
+        for (int index = 1; index < args.Length; index++)
+        {
+            string option = args[index];
+            switch (option)
+            {
+                case "--workspace":
+                    RejectDuplicate(workspace is not null, option);
+                    workspace = ReadValue(args, ref index, option);
+                    break;
+                case "--file-filter":
+                    fileNameFilters.Add(ReadValue(args, ref index, option));
+                    break;
+                default:
+                    throw Invalid($"Unknown option '{option}'.");
+            }
+        }
+
+        return new PendingChangesDiffsRequest(ResolveInputPath(workspace), fileNameFilters);
+    }
+
     static ChangesetDiffsRequest ParseChangesetDiffs(string[] args)
     {
         string? workspace = null;
@@ -69,7 +160,6 @@ static class CommandLine
         int? to = null;
         DiffAlgorithm algorithm = DiffAlgorithm.Histogram;
         bool algorithmSet = false;
-        bool findRenames = false;
 
         for (int index = 1; index < args.Length; index++)
         {
@@ -94,9 +184,7 @@ static class CommandLine
                     algorithmSet = true;
                     break;
                 case "--find-renames":
-                    RejectDuplicate(findRenames, option);
-                    findRenames = true;
-                    break;
+                    throw Invalid("Option '--find-renames' is disabled because parallel per-file diffs cannot detect cross-file renames.");
                 default:
                     throw Invalid($"Unknown option '{option}'.");
             }
@@ -112,7 +200,7 @@ static class CommandLine
             from.Value,
             to.Value,
             algorithm,
-            findRenames);
+            false);
     }
 
     static string ReadValue(string[] args, ref int index, string option)

@@ -1,7 +1,7 @@
 @echo off
 setlocal
 
-set "UVCS_TOOLS_EXE=C:\Program Files\UvcsTools\UvcsTools.exe"
+set "NV_AI_TOOLS_EXE=%LOCALAPPDATA%\Programs\NV-AITools\NV-AITools.exe"
 set "WORKSPACE=%~dp0.."
 set "REVIEWS_DIR=%~dp0Reviews"
 set "FROM_CHANGESET=%~1"
@@ -11,8 +11,8 @@ set "ALGORITHM=%~3"
 if "%FROM_CHANGESET%"=="" set /p "FROM_CHANGESET=Starting changeset: "
 if "%TO_CHANGESET%"=="" set /p "TO_CHANGESET=Ending changeset: "
 
-if not exist "%UVCS_TOOLS_EXE%" (
-    echo ERROR: UvcsTools is not installed at "%UVCS_TOOLS_EXE%".
+if not exist "%NV_AI_TOOLS_EXE%" (
+    echo ERROR: NV-AITools is not installed at "%NV_AI_TOOLS_EXE%".
     goto FailedWithoutTemp
 )
 
@@ -22,13 +22,13 @@ if errorlevel 1 (
     goto FailedWithoutTemp
 )
 
-set "TEMP_OUTPUT=%TEMP%\UvcsTools-changesets-%RANDOM%-%RANDOM%.tmp"
+set "TEMP_OUTPUT=%TEMP%\NV-AITools-changesets-%RANDOM%-%RANDOM%.tmp"
 set "FINAL_OUTPUT=%REVIEWS_DIR%\plastic-log-diff-%FROM_CHANGESET%-to-%TO_CHANGESET%.patch"
 
 if "%ALGORITHM%"=="" (
-    "%UVCS_TOOLS_EXE%" changeset-diffs --from "%FROM_CHANGESET%" --to "%TO_CHANGESET%" --workspace "%WORKSPACE%" > "%TEMP_OUTPUT%"
+    "%NV_AI_TOOLS_EXE%" changeset-diffs --from "%FROM_CHANGESET%" --to "%TO_CHANGESET%" --workspace "%WORKSPACE%" > "%TEMP_OUTPUT%"
 ) else (
-    "%UVCS_TOOLS_EXE%" changeset-diffs --from "%FROM_CHANGESET%" --to "%TO_CHANGESET%" --workspace "%WORKSPACE%" --algorithm "%ALGORITHM%" > "%TEMP_OUTPUT%"
+    "%NV_AI_TOOLS_EXE%" changeset-diffs --from "%FROM_CHANGESET%" --to "%TO_CHANGESET%" --workspace "%WORKSPACE%" --algorithm "%ALGORITHM%" > "%TEMP_OUTPUT%"
 )
 if errorlevel 1 goto Failed
 if not exist "%TEMP_OUTPUT%" goto InvalidOutput
@@ -41,7 +41,7 @@ pause
 exit /b 0
 
 :InvalidOutput
-echo ERROR: UvcsTools did not create a patch result.
+echo ERROR: NV-AITools did not create a patch result.
 
 :Failed
 if exist "%TEMP_OUTPUT%" del /q "%TEMP_OUTPUT%"

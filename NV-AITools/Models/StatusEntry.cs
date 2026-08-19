@@ -1,4 +1,4 @@
-namespace UvcsTools.Models;
+namespace NVAITools.Models;
 
 sealed record StatusEntry(
     string Path,

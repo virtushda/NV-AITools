@@ -1,8 +1,7 @@
-using UvcsTools.Cli;
-using UvcsTools.Commands;
-using UvcsTools.Infrastructure;
+using NVAITools.Cli;
+using NVAITools.Broker;
 
-namespace UvcsTools;
+namespace NVAITools;
 
 static class Application
 {
@@ -10,18 +9,16 @@ static class Application
     {
         try
         {
+            if (args.Length == 1 && args[0] == "broker-start")
+                return await BrokerProcess.StartAsync();
+            if (args.Length == 1 && args[0] == "broker-stop")
+                return await BrokerProcess.StopAsync();
+
             CommandRequest request = CommandLine.Parse(args);
-            var processes = new ProcessRunner();
-            var workspaces = new WorkspaceResolver(processes);
+            CommandOutcome outcome = await QueueClient.ExecuteAsync(request);
 
-            CommandOutcome outcome = request switch
-            {
-                StatusRequest status => await new StatusCommand(processes, workspaces).ExecuteAsync(status),
-                PendingChangesDiffsRequest pending => await new PendingChangesDiffsCommand(processes, workspaces).ExecuteAsync(pending),
-                ChangesetDiffsRequest changesets => await new ChangesetDiffsCommand(processes, workspaces).ExecuteAsync(changesets),
-                _ => throw new InvalidOperationException("Unknown command request type.")
-            };
-
+            if (outcome.Diagnostics.Length > 0)
+                await Console.Error.WriteAsync(outcome.Diagnostics);
             await Console.Out.WriteAsync(outcome.Output);
             return outcome.ExitCode;
         }
@@ -53,4 +50,7 @@ sealed class ToolException(string message, int exitCode, Exception? innerExcepti
     public int ExitCode { get; } = exitCode;
 }
 
-readonly record struct CommandOutcome(string Output, int ExitCode = ExitCodes.Success);
+readonly record struct CommandOutcome(
+    string Output,
+    int ExitCode = ExitCodes.Success,
+    string Diagnostics = "");

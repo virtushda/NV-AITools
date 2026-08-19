@@ -1,10 +1,10 @@
-namespace UvcsTools.Infrastructure;
+namespace NVAITools.Infrastructure;
 
 sealed class TempDirectory : IDisposable
 {
     public TempDirectory()
     {
-        Root = Path.Combine(Path.GetTempPath(), $"UvcsTools-{Guid.NewGuid():N}");
+        Root = Path.Combine(Path.GetTempPath(), $"NV-AITools-{Guid.NewGuid():N}");
         Directory.CreateDirectory(Root);
     }
 

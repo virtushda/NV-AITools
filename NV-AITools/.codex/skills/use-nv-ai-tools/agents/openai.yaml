@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use NV-AITools"
+  short_description: "Run approved read-only UVCS status and diffs"
+  default_prompt: "Use $use-nv-ai-tools to inspect this UVCS workspace safely."

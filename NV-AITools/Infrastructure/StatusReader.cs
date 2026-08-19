@@ -1,6 +1,6 @@
-using UvcsTools.Models;
+using NVAITools.Models;
 
-namespace UvcsTools.Infrastructure;
+namespace NVAITools.Infrastructure;
 
 sealed class StatusReader(ProcessRunner processes)
 {
@@ -8,7 +8,10 @@ sealed class StatusReader(ProcessRunner processes)
     const int MaximumOutputCharacters = 64 * 1024 * 1024;
     static readonly TimeSpan Timeout = TimeSpan.FromMinutes(10);
 
-    public async Task<List<StatusEntry>> ReadAsync(string workspaceRoot)
+    public async Task<List<StatusEntry>> ReadAsync(
+        string workspaceRoot,
+        CancellationToken cancellationToken = default,
+        OutputBudget? outputBudget = null)
     {
         string[] arguments =
         [
@@ -34,7 +37,9 @@ sealed class StatusReader(ProcessRunner processes)
             arguments,
             workspaceRoot,
             Timeout,
-            MaximumOutputCharacters);
+            MaximumOutputCharacters,
+            cancellationToken,
+            outputBudget);
 
         if (result.ExitCode != 0)
             throw ExternalFailure("cm status", result);

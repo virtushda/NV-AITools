@@ -1,13 +1,13 @@
 @echo off
 setlocal
 
-set "UVCS_TOOLS_EXE=C:\Program Files\UvcsTools\UvcsTools.exe"
+set "NV_AI_TOOLS_EXE=%LOCALAPPDATA%\Programs\NV-AITools\NV-AITools.exe"
 set "WORKSPACE=%~dp0.."
 if not "%~1"=="" set "WORKSPACE=%~1"
 set "REVIEWS_DIR=%~dp0Reviews"
 
-if not exist "%UVCS_TOOLS_EXE%" (
-    echo ERROR: UvcsTools is not installed at "%UVCS_TOOLS_EXE%".
+if not exist "%NV_AI_TOOLS_EXE%" (
+    echo ERROR: NV-AITools is not installed at "%NV_AI_TOOLS_EXE%".
     goto FailedWithoutTemp
 )
 
@@ -18,10 +18,10 @@ if errorlevel 1 (
 )
 
 call :SetTimestamp
-set "TEMP_OUTPUT=%TEMP%\UvcsTools-pending-%RANDOM%-%RANDOM%.tmp"
+set "TEMP_OUTPUT=%TEMP%\NV-AITools-pending-%RANDOM%-%RANDOM%.tmp"
 set "FINAL_OUTPUT=%REVIEWS_DIR%\pending-changes-%STAMP%.diff.txt"
 
-"%UVCS_TOOLS_EXE%" pending-changes-diffs --workspace "%WORKSPACE%" > "%TEMP_OUTPUT%"
+"%NV_AI_TOOLS_EXE%" pending-changes-diffs --workspace "%WORKSPACE%" > "%TEMP_OUTPUT%"
 if errorlevel 1 goto Failed
 if not exist "%TEMP_OUTPUT%" goto InvalidOutput
 for %%F in ("%TEMP_OUTPUT%") do if %%~zF EQU 0 goto InvalidOutput
@@ -36,7 +36,7 @@ pause
 exit /b 0
 
 :InvalidOutput
-echo ERROR: UvcsTools did not produce a valid pending-change report.
+echo ERROR: NV-AITools did not produce a valid pending-change report.
 
 :Failed
 if exist "%TEMP_OUTPUT%" del /q "%TEMP_OUTPUT%"

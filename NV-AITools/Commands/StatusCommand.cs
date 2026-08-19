@@ -1,11 +1,14 @@
 using System.Text.Json;
-using UvcsTools.Cli;
-using UvcsTools.Infrastructure;
-using UvcsTools.Models;
+using NVAITools.Cli;
+using NVAITools.Infrastructure;
+using NVAITools.Models;
 
-namespace UvcsTools.Commands;
+namespace NVAITools.Commands;
 
-sealed class StatusCommand(ProcessRunner processes, WorkspaceResolver workspaces)
+sealed class StatusCommand(
+    ProcessRunner processes,
+    WorkspaceResolver workspaces,
+    TextWriter diagnostics)
 {
     static readonly JsonSerializerOptions JsonOptions = new()
     {
@@ -13,12 +16,16 @@ sealed class StatusCommand(ProcessRunner processes, WorkspaceResolver workspaces
         WriteIndented = true
     };
 
-    public async Task<CommandOutcome> ExecuteAsync(StatusRequest request)
+    public async Task<CommandOutcome> ExecuteAsync(
+        StatusRequest request,
+        CancellationToken cancellationToken = default)
     {
-        Console.Error.WriteLine("Resolving UVCS workspace...");
-        string workspaceRoot = await workspaces.ResolveAsync(request.Workspace);
-        Console.Error.WriteLine("Reading workspace status...");
-        List<StatusEntry> entries = await new StatusReader(processes).ReadAsync(workspaceRoot);
+        await diagnostics.WriteLineAsync("Resolving UVCS workspace...");
+        string workspaceRoot = await workspaces.ResolveAsync(request.Workspace, cancellationToken);
+        await diagnostics.WriteLineAsync("Reading workspace status...");
+        List<StatusEntry> entries = await new StatusReader(processes).ReadAsync(
+            workspaceRoot,
+            cancellationToken);
 
         var counts = new SortedDictionary<string, int>(StringComparer.Ordinal);
         for (int index = 0; index < entries.Count; index++)
