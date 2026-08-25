@@ -6,12 +6,16 @@ namespace NVAITools.Commands;
 
 sealed class ChangesetDiffsCommand(
     ProcessRunner processes,
+    UvcsRunner uvcs,
     WorkspaceResolver workspaces,
     TextWriter diagnostics)
 {
     const char FieldSeparator = '\u001f';
     const int MaximumMetadataCharacters = 64 * 1024 * 1024;
     const int MaximumCommandOutputCharacters = 64 * 1024 * 1024;
+    const int MaximumBatchEntries = 16;
+    const int MaximumBatchCommandCharacters = 24 * 1024;
+    const int BatchCommandBaseCharacters = 64;
     static readonly TimeSpan CmTimeout = TimeSpan.FromMinutes(10);
     static readonly TimeSpan GitTimeout = TimeSpan.FromMinutes(10);
     // Keep this disabled path: one Git comparison over both complete trees is the correct way to restore cross-file rename detection.
@@ -33,13 +37,13 @@ sealed class ChangesetDiffsCommand(
         await RequireGitAsync(workspaceRoot, cancellationToken, outputBudget);
 
         await diagnostics.WriteLineAsync($"Finding changes from cs:{request.From} through cs:{request.To}...");
-        List<string> candidates = await GetCandidatesAsync(
+        List<LogicalChange> changes = await GetChangesAsync(
             request.From,
             request.To,
             workspaceRoot,
             cancellationToken,
             outputBudget);
-        if (candidates.Count == 0)
+        if (changes.Count == 0)
             return new CommandOutcome(string.Empty);
 
         using var temporary = new TempDirectory();
@@ -48,9 +52,16 @@ sealed class ChangesetDiffsCommand(
         Directory.CreateDirectory(oldRoot);
         Directory.CreateDirectory(newRoot);
 
-        ChangeResult[] results = await OrderedParallelPipeline.RunAsync<string, PreparedChange, ChangeResult>(
-            candidates,
-            PrepareAsync,
+        List<DownloadBatch> batches = BuildDownloadBatches(
+            changes,
+            oldRoot,
+            newRoot,
+            request.From,
+            request.To);
+        ChangeResult[] results = await OrderedBatchPipeline.RunAsync<DownloadBatch, PreparedChange, ChangeResult>(
+            batches,
+            changes.Count,
+            PrepareBatchAsync,
             CompareAsync,
             cancellationToken);
 
@@ -89,45 +100,60 @@ sealed class ChangesetDiffsCommand(
 
         return new CommandOutcome(patch.ToString());
 
-        async Task<PreparedChange> PrepareAsync(
-            int _,
-            string repositoryPath,
+        async Task<IReadOnlyList<IndexedItem<PreparedChange>>> PrepareBatchAsync(
+            DownloadBatch batch,
             CancellationToken token)
         {
-            try
+            for (int index = 0; index < batch.Downloads.Length; index++)
+                Directory.CreateDirectory(Path.GetDirectoryName(batch.Downloads[index].Destination)!);
+
+            var childDiagnostics = new StringBuilder();
+            if (batch.UseCollection)
             {
-                string oldPath = GetSafeEndpointPath(oldRoot, repositoryPath);
-                string newPath = GetSafeEndpointPath(newRoot, repositoryPath);
-                bool hasOld = await TryExportAsync(
-                    repositoryPath,
-                    request.From,
-                    oldPath,
+                var arguments = new List<string>(batch.Downloads.Length + 2) { "getfile" };
+                for (int index = 0; index < batch.Downloads.Length; index++)
+                {
+                    DownloadEntry download = batch.Downloads[index];
+                    arguments.Add($"{download.Revision};{download.Destination}");
+                }
+                arguments.Add("--raw");
+
+                ProcessResult result = await uvcs.RunAsync(
+                    arguments,
                     workspaceRoot,
+                    CmTimeout,
+                    MaximumMetadataCharacters,
                     token,
                     outputBudget);
-                bool hasNew = await TryExportAsync(
-                    repositoryPath,
-                    request.To,
-                    newPath,
-                    workspaceRoot,
-                    token,
-                    outputBudget);
-                return new PreparedChange(repositoryPath, oldPath, newPath, hasOld, hasNew);
+                if (result.ExitCode != 0)
+                    throw ExternalFailure("cm getfile", result);
+                AppendDiagnostics(childDiagnostics, result);
             }
-            catch (OperationCanceledException)
+            else
             {
-                throw;
+                for (int index = 0; index < batch.Downloads.Length; index++)
+                {
+                    DownloadEntry download = batch.Downloads[index];
+                    ProcessResult result = await uvcs.RunAsync(
+                        ["getfile", download.Revision, $"--file={download.Destination}", "--raw"],
+                        workspaceRoot,
+                        CmTimeout,
+                        MaximumMetadataCharacters,
+                        token,
+                        outputBudget);
+                    if (result.ExitCode != 0)
+                        throw ExternalFailure("cm getfile", result);
+                    AppendDiagnostics(childDiagnostics, result);
+                }
             }
-            catch (Exception exception)
-            {
-                outputBudget.ThrowIfExceeded();
-                if (exception is not ToolException toolException)
-                    throw;
-                throw new ToolException(
-                    $"Failed to export '{repositoryPath}': {toolException.Message}",
-                    toolException.ExitCode,
-                    toolException);
-            }
+
+            ValidateBatchOutputs(batch, childDiagnostics);
+            var prepared = new IndexedItem<PreparedChange>[batch.Changes.Length];
+            for (int index = 0; index < batch.Changes.Length; index++)
+                prepared[index] = new IndexedItem<PreparedChange>(
+                    batch.Changes[index].Index,
+                    batch.Changes[index].Prepared);
+            return prepared;
         }
 
         async Task<ChangeResult> CompareAsync(
@@ -202,24 +228,22 @@ sealed class ChangesetDiffsCommand(
             throw new ToolException("Git is unavailable.", ExitCodes.DependencyOrWorkspaceFailure);
     }
 
-    async Task<List<string>> GetCandidatesAsync(
+    async Task<List<LogicalChange>> GetChangesAsync(
         int from,
         int to,
         string workspaceRoot,
         CancellationToken cancellationToken,
         OutputBudget outputBudget)
     {
-        int lowerBound = from == 0 ? 0 : from - 1;
-        string itemFormat = $"{{shortstatus}}{FieldSeparator}{{path}}{{newline}}";
-        ProcessResult result = await processes.RunAsync(
-            "cm",
+        string format = $"{{status}}{FieldSeparator}{{type}}{FieldSeparator}{{path}}" +
+            $"{FieldSeparator}{{srccmpath}}{FieldSeparator}{{dstcmpath}}{{newline}}";
+        ProcessResult result = await uvcs.RunAsync(
             [
-                "log",
+                "diff",
+                $"cs:{from}",
                 $"cs:{to}",
-                $"--from=cs:{lowerBound}",
-                "--csformat={items}",
-                $"--itemformat={itemFormat}",
-                "--repositorypaths"
+                "--repositorypaths",
+                $"--format={format}"
             ],
             workspaceRoot,
             CmTimeout,
@@ -228,67 +252,201 @@ sealed class ChangesetDiffsCommand(
             outputBudget);
 
         if (result.ExitCode != 0)
-            throw ExternalFailure("cm log", result);
+            throw ExternalFailure("cm diff", result);
 
-        var candidates = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        using var reader = new StringReader(result.StandardOutput);
+        return ParseChanges(result.StandardOutput);
+    }
+
+    internal static List<LogicalChange> ParseChanges(string output)
+    {
+        var candidates = new Dictionary<string, LogicalChange>(StringComparer.Ordinal);
+        using var reader = new StringReader(output);
         while (reader.ReadLine() is { } line)
         {
             if (string.IsNullOrWhiteSpace(line))
                 continue;
 
-            int separator = line.IndexOf(FieldSeparator);
-            if (separator <= 0 || separator == line.Length - 1)
-                throw new ToolException($"Could not parse UVCS log line: {line}", ExitCodes.InternalFailure);
+            string[] fields = line.Split(FieldSeparator);
+            if (fields.Length != 5)
+                throw new ToolException($"Could not parse UVCS diff line: {line}", ExitCodes.InternalFailure);
 
-            string status = line[..separator].Trim();
-            if (status is not "A" and not "D" and not "M" and not "C")
-                throw new ToolException($"Unknown UVCS log status '{status}'.", ExitCodes.InternalFailure);
+            string status = fields[0].Trim();
+            string type = fields[1].Trim();
+            if (status is not "A" and not "C" and not "D" and not "M")
+                throw new ToolException($"Unknown UVCS diff status '{status}'.", ExitCodes.InternalFailure);
+            if (type == "D")
+            {
+                if (status == "M")
+                {
+                    string source = NormalizeRepositoryPath(fields[3]);
+                    string destination = NormalizeRepositoryPath(fields[4]);
+                    throw new ToolException(
+                        $"Moved directory '{source}' to '{destination}' cannot be represented safely as per-file differences.",
+                        ExitCodes.InternalFailure);
+                }
+                continue;
+            }
+            if (type == "X")
+                continue;
+            if (type is not "F" and not "B" and not "S")
+                throw new ToolException($"Unknown UVCS diff item type '{type}'.", ExitCodes.InternalFailure);
 
-            string path = NormalizeRepositoryPath(line[(separator + 1)..]);
-            if (Extensions.Contains(Path.GetExtension(path)))
-                candidates.Add(path);
+            switch (status)
+            {
+                case "C":
+                    Add(fields[2], true, true);
+                    break;
+                case "A":
+                    Add(fields[2], false, true);
+                    break;
+                case "D":
+                    Add(fields[2], true, false);
+                    break;
+                case "M":
+                    Add(fields[3], true, false);
+                    Add(fields[4], false, true);
+                    break;
+            }
         }
 
-        var sorted = candidates.ToList();
-        sorted.Sort(StringComparer.OrdinalIgnoreCase);
+        var sorted = new List<LogicalChange>(candidates.Values);
+        sorted.Sort(static (left, right) =>
+        {
+            int comparison = StringComparer.OrdinalIgnoreCase.Compare(left.RepositoryPath, right.RepositoryPath);
+            return comparison != 0
+                ? comparison
+                : StringComparer.Ordinal.Compare(left.RepositoryPath, right.RepositoryPath);
+        });
         return sorted;
+
+        void Add(string rawPath, bool hasOld, bool hasNew)
+        {
+            string repositoryPath = NormalizeRepositoryPath(rawPath);
+            if (!Extensions.Contains(Path.GetExtension(repositoryPath)))
+                return;
+
+            var candidate = new LogicalChange(repositoryPath, hasOld, hasNew);
+            if (!candidates.TryAdd(repositoryPath, candidate) && candidates[repositoryPath] != candidate)
+                throw new ToolException(
+                    $"UVCS returned conflicting changes for '{repositoryPath}'.",
+                    ExitCodes.InternalFailure);
+        }
     }
 
-    async Task<bool> TryExportAsync(
-        string repositoryPath,
-        int changeset,
-        string destination,
-        string workspaceRoot,
-        CancellationToken cancellationToken,
-        OutputBudget outputBudget)
+    internal static List<DownloadBatch> BuildDownloadBatches(
+        IReadOnlyList<LogicalChange> changes,
+        string oldRoot,
+        string newRoot,
+        int from,
+        int to)
     {
-        Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
-        string revision = $"serverpath:/{repositoryPath}#cs:{changeset}";
-        ProcessResult result = await processes.RunAsync(
-            "cm",
-            ["cat", revision, $"--file={destination}", "--raw"],
-            workspaceRoot,
-            CmTimeout,
-            MaximumMetadataCharacters,
-            cancellationToken,
-            outputBudget);
+        var batches = new List<DownloadBatch>();
+        var currentChanges = new List<BatchChange>();
+        var currentDownloads = new List<DownloadEntry>();
+        int currentCharacters = BatchCommandBaseCharacters;
 
-        if (result.ExitCode == 0)
+        for (int index = 0; index < changes.Count; index++)
         {
-            if (!File.Exists(destination))
-                throw new ToolException($"UVCS did not create the exported file for '{repositoryPath}'.", ExitCodes.InternalFailure);
-            return true;
+            LogicalChange change = changes[index];
+            string oldPath = GetSafeEndpointPath(oldRoot, change.RepositoryPath);
+            string newPath = GetSafeEndpointPath(newRoot, change.RepositoryPath);
+            var batchChange = new BatchChange(
+                index,
+                new PreparedChange(change.RepositoryPath, oldPath, newPath, change.HasOld, change.HasNew));
+            var downloads = new List<DownloadEntry>(2);
+            if (change.HasOld)
+                downloads.Add(CreateDownload(change.RepositoryPath, "old", from, oldPath));
+            if (change.HasNew)
+                downloads.Add(CreateDownload(change.RepositoryPath, "new", to, newPath));
+
+            int itemCharacters = 0;
+            bool useSingle = false;
+            for (int downloadIndex = 0; downloadIndex < downloads.Count; downloadIndex++)
+            {
+                DownloadEntry download = downloads[downloadIndex];
+                useSingle |= download.Revision.Contains(';') || download.Destination.Contains(';');
+                itemCharacters += EstimateArgumentCharacters($"{download.Revision};{download.Destination}");
+            }
+            useSingle |= BatchCommandBaseCharacters + itemCharacters > MaximumBatchCommandCharacters;
+
+            if (useSingle)
+            {
+                Flush();
+                batches.Add(new DownloadBatch([batchChange], downloads.ToArray(), false));
+                continue;
+            }
+
+            if (currentDownloads.Count + downloads.Count > MaximumBatchEntries ||
+                currentCharacters + itemCharacters > MaximumBatchCommandCharacters)
+            {
+                Flush();
+            }
+
+            currentChanges.Add(batchChange);
+            currentDownloads.AddRange(downloads);
+            currentCharacters += itemCharacters;
         }
 
-        string diagnostics = $"{result.StandardError}\n{result.StandardOutput}";
-        if (IsMissingRevision(diagnostics))
+        Flush();
+        return batches;
+
+        void Flush()
         {
-            File.Delete(destination);
-            return false;
+            if (currentChanges.Count == 0)
+                return;
+            batches.Add(new DownloadBatch(currentChanges.ToArray(), currentDownloads.ToArray(), true));
+            currentChanges.Clear();
+            currentDownloads.Clear();
+            currentCharacters = BatchCommandBaseCharacters;
+        }
+    }
+
+    static DownloadEntry CreateDownload(
+        string repositoryPath,
+        string endpoint,
+        int changeset,
+        string destination) => new(
+            repositoryPath,
+            endpoint,
+            $"serverpath:/{repositoryPath}#cs:{changeset}",
+            destination);
+
+    static int EstimateArgumentCharacters(string argument) => checked(argument.Length * 2 + 3);
+
+    static void ValidateBatchOutputs(DownloadBatch batch, StringBuilder childDiagnostics)
+    {
+        StringBuilder? missing = null;
+        for (int index = 0; index < batch.Downloads.Length; index++)
+        {
+            DownloadEntry download = batch.Downloads[index];
+            if (File.Exists(download.Destination))
+                continue;
+
+            missing ??= new StringBuilder("UVCS completed without creating every requested file:");
+            missing.AppendLine();
+            missing.Append("- ")
+                .Append(download.RepositoryPath)
+                .Append(" (")
+                .Append(download.Endpoint)
+                .Append(", ")
+                .Append(download.Revision)
+                .Append(") -> ")
+                .Append(download.Destination);
         }
 
-        throw ExternalFailure("cm cat", result);
+        if (missing is null)
+            return;
+        if (childDiagnostics.Length > 0)
+            missing.AppendLine().Append("UVCS diagnostics: ").Append(childDiagnostics.ToString().Trim());
+        throw new ToolException(missing.ToString(), ExitCodes.InternalFailure);
+    }
+
+    static void AppendDiagnostics(StringBuilder destination, ProcessResult result)
+    {
+        if (!string.IsNullOrWhiteSpace(result.StandardError))
+            destination.AppendLine(result.StandardError.Trim());
+        if (!string.IsNullOrWhiteSpace(result.StandardOutput))
+            destination.AppendLine(result.StandardOutput.Trim());
     }
 
     async Task<CommandOutcome> GenerateCombinedTreeDiffAsync(
@@ -384,21 +542,6 @@ sealed class ChangesetDiffsCommand(
         return fullPath;
     }
 
-    static bool IsMissingRevision(string diagnostics)
-    {
-        string[] indicators =
-        [
-            "not found", "cannot find", "couldn't find", "does not exist", "doesn't exist",
-            "no revision", "not a file", "not exist"
-        ];
-        for (int index = 0; index < indicators.Length; index++)
-        {
-            if (diagnostics.Contains(indicators[index], StringComparison.OrdinalIgnoreCase))
-                return true;
-        }
-        return false;
-    }
-
     static async Task<bool> IsBinaryLikeAsync(string path, CancellationToken cancellationToken)
     {
         byte[] buffer = new byte[16 * 1024];
@@ -414,9 +557,17 @@ sealed class ChangesetDiffsCommand(
 
     static ToolException ExternalFailure(string command, ProcessResult result)
     {
-        string diagnostics = result.StandardError.Trim();
-        if (diagnostics.Length == 0)
-            diagnostics = result.StandardOutput.Trim();
+        string standardError = result.StandardError.Trim();
+        string standardOutput = result.StandardOutput.Trim();
+        var diagnostics = new StringBuilder();
+        if (standardError.Length > 0)
+            diagnostics.Append("stderr: ").Append(standardError);
+        if (standardOutput.Length > 0)
+        {
+            if (diagnostics.Length > 0)
+                diagnostics.AppendLine();
+            diagnostics.Append("stdout: ").Append(standardOutput);
+        }
         string message = diagnostics.Length == 0
             ? $"'{command}' failed with exit code {result.ExitCode}."
             : $"'{command}' failed with exit code {result.ExitCode}: {diagnostics}";
@@ -427,12 +578,30 @@ sealed class ChangesetDiffsCommand(
         "Changeset patch exceeded the configured output limit.",
         ExitCodes.ExternalCommandFailure);
 
-    readonly record struct PreparedChange(
+    internal readonly record struct LogicalChange(
+        string RepositoryPath,
+        bool HasOld,
+        bool HasNew);
+
+    internal readonly record struct PreparedChange(
         string RepositoryPath,
         string OldPath,
         string NewPath,
         bool HasOld,
         bool HasNew);
+
+    internal readonly record struct BatchChange(int Index, PreparedChange Prepared);
+
+    internal readonly record struct DownloadEntry(
+        string RepositoryPath,
+        string Endpoint,
+        string Revision,
+        string Destination);
+
+    internal sealed record DownloadBatch(
+        BatchChange[] Changes,
+        DownloadEntry[] Downloads,
+        bool UseCollection);
 
     readonly record struct ChangeResult(
         PreparedChange Prepared,

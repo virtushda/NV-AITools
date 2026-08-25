@@ -8,6 +8,7 @@ namespace NVAITools.Commands;
 
 sealed class PendingChangesDiffsCommand(
     ProcessRunner processes,
+    UvcsRunner uvcs,
     WorkspaceResolver workspaces,
     TextWriter diagnostics)
 {
@@ -31,7 +32,7 @@ sealed class PendingChangesDiffsCommand(
         string workspaceRoot = await workspaces.ResolveAsync(request.Workspace, cancellationToken, outputBudget);
         using var workspaceFiles = new WorkspaceReadBoundary(workspaceRoot);
         await diagnostics.WriteLineAsync("Reading pending changes...");
-        List<StatusEntry> entries = await new StatusReader(processes).ReadAsync(
+        List<StatusEntry> entries = await new StatusReader(uvcs).ReadAsync(
             workspaceRoot,
             cancellationToken,
             outputBudget);
@@ -190,8 +191,7 @@ sealed class PendingChangesDiffsCommand(
         CancellationToken cancellationToken,
         OutputBudget outputBudget)
     {
-        ProcessResult result = await processes.RunAsync(
-            "cm",
+        ProcessResult result = await uvcs.RunAsync(
             ["fileinfo", fullPath, "--format={RevisionChangeset}"],
             workspaceRoot,
             CmTimeout,
@@ -219,8 +219,7 @@ sealed class PendingChangesDiffsCommand(
         CancellationToken cancellationToken,
         OutputBudget outputBudget)
     {
-        ProcessResult result = await processes.RunAsync(
-            "cm",
+        ProcessResult result = await uvcs.RunAsync(
             ["getfile", $"{fullPath}#cs:{changeset}", $"--file={destination}", "--raw"],
             workspaceRoot,
             CmTimeout,

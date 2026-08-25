@@ -102,6 +102,6 @@ static class BrokerProcess
     }
 
     static ToolException StartupFailure() => new(
-        $"NV-AITools broker started but could not load its configuration. Review '{BrokerPaths.LogPath}' and reload config.ini from the tray.",
+        $"NV-AITools broker did not initialize. Review '{BrokerPaths.LogPath}', correct the dependency or configuration error, and reload from the tray.",
         ExitCodes.DependencyOrWorkspaceFailure);
 }

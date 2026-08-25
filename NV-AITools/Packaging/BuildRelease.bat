@@ -5,7 +5,7 @@ for %%I in ("%~dp0..") do set "ROOT=%%~fI"
 for %%I in ("%ROOT%\..") do set "REPOSITORY_ROOT=%%~fI"
 set "PROJECT=%ROOT%\NV-AITools.csproj"
 set "VERSION=%~1"
-if "%VERSION%"=="" set "VERSION=1.2.0"
+if "%VERSION%"=="" set "VERSION=1.3.0"
 
 set "ARTIFACTS=%ROOT%\Artifacts"
 set "PUBLISH_DIR=%ARTIFACTS%\publish\win-x64"
@@ -83,14 +83,17 @@ exit /b 0
 >> "%~1" echo(
 >> "%~1" echo(REQUIREMENTS
 >> "%~1" echo(1. Windows x64.
->> "%~1" echo(2. Unity Version Control or Plastic SCM with cm.exe available on PATH.
+>> "%~1" echo(2. Unity Version Control 11.0.16.8411 or newer with cm.exe available on PATH.
 >> "%~1" echo(3. Git with git.exe available on PATH.
 >> "%~1" echo(
 >> "%~1" echo(NV-AITools is self-contained. The receiving computer does not need the .NET runtime.
 >> "%~1" echo(
->> "%~1" echo(VERSION 1.2
->> "%~1" echo(Pending and changeset diff commands use rolling, ordered pipelines with up to 16 Plastic operations and 16 local comparisons per active command.
+>> "%~1" echo(VERSION 1.3
+>> "%~1" echo(The broker allows one authenticated UVCS process at a time across all workspaces.
+>> "%~1" echo(Changeset diffs download up to 16 revisions per UVCS batch and overlap batches with up to 16 local Git comparisons.
+>> "%~1" echo(Pending diffs retain up to 16 preparation and local comparison workers, while their UVCS calls pass through the same broker-wide gate.
 >> "%~1" echo(Rename detection is disabled because per-file comparisons cannot identify cross-file renames correctly.
+>> "%~1" echo(File moves become delete/add patches. Moved directories fail explicitly instead of returning incomplete descendant patches.
 >> "%~1" echo(Pending-change diffs accept repeatable --file-filter filename globs.
 >> "%~1" echo(Filters are case-insensitive, match basenames in any folder, support * and ?, and combine with OR.
 >> "%~1" echo(

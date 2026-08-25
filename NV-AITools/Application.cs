@@ -1,5 +1,6 @@
 using NVAITools.Cli;
 using NVAITools.Broker;
+using NVAITools.Infrastructure;
 
 namespace NVAITools;
 
@@ -13,6 +14,13 @@ static class Application
                 return await BrokerProcess.StartAsync();
             if (args.Length == 1 && args[0] == "broker-stop")
                 return await BrokerProcess.StopAsync();
+            if (args.Length == 1 && args[0] == "broker-check-dependencies")
+            {
+                using var uvcs = new UvcsRunner(new ProcessRunner());
+                Version version = await uvcs.RequireMinimumVersionAsync(AppContext.BaseDirectory);
+                Console.Out.WriteLine($"Unity Version Control {version} accepted.");
+                return ExitCodes.Success;
+            }
 
             CommandRequest request = CommandLine.Parse(args);
             CommandOutcome outcome = await QueueClient.ExecuteAsync(request);

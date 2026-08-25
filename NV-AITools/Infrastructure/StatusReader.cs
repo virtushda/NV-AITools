@@ -2,7 +2,7 @@ using NVAITools.Models;
 
 namespace NVAITools.Infrastructure;
 
-sealed class StatusReader(ProcessRunner processes)
+sealed class StatusReader(UvcsRunner uvcs)
 {
     const char FieldSeparator = '\u001f';
     const int MaximumOutputCharacters = 64 * 1024 * 1024;
@@ -32,8 +32,7 @@ sealed class StatusReader(ProcessRunner processes)
             "--private"
         ];
 
-        ProcessResult result = await processes.RunAsync(
-            "cm",
+        ProcessResult result = await uvcs.RunAsync(
             arguments,
             workspaceRoot,
             Timeout,

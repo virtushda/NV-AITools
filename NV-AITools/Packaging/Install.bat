@@ -41,6 +41,12 @@ if not exist "%SKILL_SOURCE%\SKILL.md" (
     exit /b 1
 )
 
+"%APPLICATION_SOURCE%" broker-check-dependencies
+if errorlevel 1 (
+    echo ERROR: The installed Unity Version Control client is not supported by this NV-AITools release.
+    exit /b 3
+)
+
 if exist "%LEGACY_SKILL_TARGET%" rmdir /s /q "%LEGACY_SKILL_TARGET%"
 if exist "%LEGACY_SKILL_TARGET%" (
     echo ERROR: Could not remove the obsolete skill from "%LEGACY_SKILL_TARGET%".

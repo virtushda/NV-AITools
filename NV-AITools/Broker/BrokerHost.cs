@@ -9,7 +9,8 @@ sealed class BrokerHost : IAsyncDisposable
     const int MaximumConcurrentWorkspaces = 4;
 
     readonly BrokerLog log;
-    readonly CommandDispatcher dispatcher = new();
+    readonly UvcsRunner uvcs;
+    readonly CommandDispatcher dispatcher;
     readonly SemaphoreSlim globalCapacity = new(MaximumConcurrentWorkspaces);
     readonly SemaphoreSlim reloadGate = new(1, 1);
     readonly CancellationTokenSource shutdown = new();
@@ -17,7 +18,12 @@ sealed class BrokerHost : IAsyncDisposable
     int stopping;
     int watcherFailures;
 
-    public BrokerHost(BrokerLog log) => this.log = log;
+    public BrokerHost(BrokerLog log)
+    {
+        this.log = log;
+        uvcs = new UvcsRunner(new ProcessRunner());
+        dispatcher = new CommandDispatcher(uvcs);
+    }
 
     public event Action<BrokerStatus>? StatusChanged;
 
@@ -34,7 +40,7 @@ sealed class BrokerHost : IAsyncDisposable
         {
             if (shutdown.IsCancellationRequested)
                 return false;
-            ReportError($"Configuration was not loaded: {exception.Message}");
+            ReportError($"Broker startup failed: {exception.Message}");
             return false;
         }
     }
@@ -48,6 +54,8 @@ sealed class BrokerHost : IAsyncDisposable
             if (Volatile.Read(ref stopping) != 0)
                 throw new InvalidOperationException("Broker is stopping.");
 
+            Version version = await uvcs.RequireMinimumVersionAsync(AppContext.BaseDirectory, cancellationToken);
+            log.Write($"Unity Version Control {version} accepted.");
             BrokerConfiguration configuration = BrokerConfiguration.Load(BrokerPaths.ConfigurationPath);
             await ValidateWorkspacesAsync(configuration.WorkspaceRoots, cancellationToken);
 
@@ -145,13 +153,14 @@ sealed class BrokerHost : IAsyncDisposable
         globalCapacity.Dispose();
         reloadGate.Dispose();
         shutdown.Dispose();
+        uvcs.Dispose();
     }
 
-    static async Task ValidateWorkspacesAsync(
+    async Task ValidateWorkspacesAsync(
         IReadOnlyList<string> workspaceRoots,
         CancellationToken cancellationToken)
     {
-        var resolver = new WorkspaceResolver(new ProcessRunner());
+        var resolver = new WorkspaceResolver(uvcs);
         for (int index = 0; index < workspaceRoots.Count; index++)
         {
             string configured = workspaceRoots[index];

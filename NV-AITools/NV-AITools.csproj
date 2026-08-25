@@ -7,7 +7,7 @@
         <ApplicationIcon>AppIcon.ico</ApplicationIcon>
         <AssemblyName>NV-AITools</AssemblyName>
         <RootNamespace>NVAITools</RootNamespace>
-        <Version>1.2.0</Version>
+        <Version>1.3.0</Version>
         <ImplicitUsings>enable</ImplicitUsings>
         <Nullable>enable</Nullable>
         <InvariantGlobalization>true</InvariantGlobalization>

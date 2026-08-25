@@ -4,7 +4,7 @@ using NVAITools.Infrastructure;
 
 namespace NVAITools.Broker;
 
-sealed class CommandDispatcher
+sealed class CommandDispatcher(UvcsRunner uvcs)
 {
     public async Task<CommandOutcome> ExecuteAsync(
         CommandRequest request,
@@ -14,14 +14,14 @@ sealed class CommandDispatcher
         try
         {
             var processes = new ProcessRunner();
-            var workspaces = new WorkspaceResolver(processes);
+            var workspaces = new WorkspaceResolver(uvcs);
             CommandOutcome outcome = request switch
             {
-                StatusRequest status => await new StatusCommand(processes, workspaces, diagnostics)
+                StatusRequest status => await new StatusCommand(uvcs, workspaces, diagnostics)
                     .ExecuteAsync(status, cancellationToken),
-                PendingChangesDiffsRequest pending => await new PendingChangesDiffsCommand(processes, workspaces, diagnostics)
+                PendingChangesDiffsRequest pending => await new PendingChangesDiffsCommand(processes, uvcs, workspaces, diagnostics)
                     .ExecuteAsync(pending, cancellationToken),
-                ChangesetDiffsRequest changesets => await new ChangesetDiffsCommand(processes, workspaces, diagnostics)
+                ChangesetDiffsRequest changesets => await new ChangesetDiffsCommand(processes, uvcs, workspaces, diagnostics)
                     .ExecuteAsync(changesets, cancellationToken),
                 _ => throw new InvalidOperationException("Unknown command request type.")
             };

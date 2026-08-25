@@ -41,7 +41,7 @@ The installed executable is a queue client. It discovers the nearest configured 
   & "$env:LOCALAPPDATA\Programs\NV-AITools\NV-AITools.exe" changeset-diffs --from 20640 --to 20663 --workspace "X:\path\inside\workspace"
   ```
 
-Add `--algorithm histogram|patience|default|minimal` only when the user requests it. Histogram is the default. Rename detection is not supported by the parallel per-file changeset flow.
+Add `--algorithm histogram|patience|default|minimal` only when the user requests it. Histogram is the default. Rename detection is not supported by the batched per-file changeset flow. File moves are reported as delete/add patches; moved directories fail explicitly because their descendant file moves cannot be represented safely from one directory row.
 
 ## Handle the result
 

@@ -1,6 +1,6 @@
 namespace NVAITools.Infrastructure;
 
-sealed class WorkspaceResolver(ProcessRunner processes)
+sealed class WorkspaceResolver(UvcsRunner uvcs)
 {
     static readonly TimeSpan Timeout = TimeSpan.FromSeconds(30);
 
@@ -14,8 +14,7 @@ sealed class WorkspaceResolver(ProcessRunner processes)
                 $"Workspace path does not exist: {requestedPath}",
                 ExitCodes.DependencyOrWorkspaceFailure);
 
-        ProcessResult result = await processes.RunAsync(
-            "cm",
+        ProcessResult result = await uvcs.RunAsync(
             ["getworkspacefrompath", requestedPath, "--format={wkpath}"],
             requestedPath,
             Timeout,

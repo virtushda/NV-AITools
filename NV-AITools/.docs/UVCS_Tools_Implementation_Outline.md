@@ -83,8 +83,20 @@ Changeset diffs run one `git diff --no-index --no-renames` process per text file
 
 [QueueProtocol](../Broker/QueueProtocol.cs#L22) carries the optional filter array without changing protocol version 1. Unfiltered serialized requests retain the previous empty-arguments shape, while status and changeset requests reject the pending-only field. [PendingChangesDiffsCommand.ExecuteAsync](../Commands/PendingChangesDiffsCommand.cs#L23) applies matching after status discovery but before temporary files, per-file Plastic calls, copies, and comparisons. Excluded eligible entries contribute to the existing skipped count.
 
-## 8. Packaging and Trust
+## 8. Version 1.3 Serialized UVCS and Batched Changesets
 
-The portable ZIP contains the executable, hidden startup script, default configuration, install and uninstall scripts, generated README, one AI skill, and optional human wrappers. Installation checks for both `cm.exe` and `git.exe`, preserves an existing `config.ini`, removes the obsolete pre-rename skill, stops the previous broker before replacement, installs per user, registers hidden login startup, and starts the broker. Uninstallation stops the broker and removes the application, startup script, configuration, logs, startup entry, current skill, and obsolete skill without touching workspace data.
+The broker owns one [UvcsRunner](../Infrastructure/UvcsRunner.cs) for its lifetime. Every workspace resolution, status query, pending baseline query, changeset metadata query, and content download passes through its cancelable one-process gate. Local `git.exe` and `fc.exe` comparisons remain outside the gate. Broker startup and configuration reload require Unity Version Control 11.0.16.8411 or newer before readiness because that release introduced multi-revision `getfile` collections.
+
+[ChangesetDiffsCommand](../Commands/ChangesetDiffsCommand.cs) now uses one direct endpoint `cm diff` instead of aggregating changeset logs. Added, changed, and deleted files map directly to logical output items. File moves map to a deletion at the source path and an addition at the destination path so the intentionally disabled rename detection cannot hide a pure move. A moved directory fails explicitly because its single metadata row does not provide a safe per-file representation of descendant moves.
+
+Sorted logical changes are packed into sequential `cm getfile` batches with at most 16 revision/destination entries and a conservative 24 KiB command-line budget. Old and new sides of one logical item are never split. Paths containing the collection delimiter, or an item too large for the collection budget, use the single-revision form through the same gate. A batch publishes nothing until the process succeeds and every requested destination exists.
+
+The changeset command uses [OrderedBatchPipeline](../Infrastructure/OrderedBatchPipeline.cs): one batch producer feeds a bounded 16-item channel and up to 16 local Git consumers. This overlaps the next UVCS batch with comparisons of the previous batch while preserving deterministic result order and command-level fail-fast behavior. The pending command keeps its version 1.2 output and per-file failure policy, but its UVCS calls are globally serialized.
+
+Repository-local command tests run the complete changeset coordinator through a fake UVCS boundary. They cover a multi-revision collection, semicolon-safe single downloads, final Git patches, an exit-zero incomplete batch, and a nonzero batch that writes diagnostics to both stdout and stderr.
+
+## 9. Packaging and Trust
+
+The portable ZIP contains the executable, hidden startup script, default configuration, install and uninstall scripts, generated README, one AI skill, and optional human wrappers. Installation checks for both `cm.exe` and `git.exe`, runs the packaged minimum-version preflight before any installation mutation, preserves an existing `config.ini`, removes the obsolete pre-rename skill, stops the previous broker before replacement, installs per user, registers hidden login startup, and starts the broker. Uninstallation stops the broker and removes the application, startup script, configuration, logs, startup entry, current skill, and obsolete skill without touching workspace data.
 
 The per-user application directory is writable by the current user. The trust model therefore requires AI agents to run in a sandbox that cannot modify the installed executable, configuration, or skill. Using an unrestricted AI means accepting that it can replace those trusted components.

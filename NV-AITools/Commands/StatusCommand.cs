@@ -6,7 +6,7 @@ using NVAITools.Models;
 namespace NVAITools.Commands;
 
 sealed class StatusCommand(
-    ProcessRunner processes,
+    UvcsRunner uvcs,
     WorkspaceResolver workspaces,
     TextWriter diagnostics)
 {
@@ -23,7 +23,7 @@ sealed class StatusCommand(
         await diagnostics.WriteLineAsync("Resolving UVCS workspace...");
         string workspaceRoot = await workspaces.ResolveAsync(request.Workspace, cancellationToken);
         await diagnostics.WriteLineAsync("Reading workspace status...");
-        List<StatusEntry> entries = await new StatusReader(processes).ReadAsync(
+        List<StatusEntry> entries = await new StatusReader(uvcs).ReadAsync(
             workspaceRoot,
             cancellationToken);
 
